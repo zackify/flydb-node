@@ -1,16 +1,19 @@
-let methods = client => ({
-  send: ({ message, retry = 0, originalResolve }) =>
-    new Promise((resolve, reject) => {
-      client.write(`${JSON.stringify(message)}\r\n`);
+let callbacks = {};
+let id = 0;
 
+let methods = client => ({
+  send: ({ messages, kind }) =>
+    new Promise((resolve, reject) => {
       let timer = setTimeout(() => {
-        console.log("not resolved", message.path);
+        console.log("not resolved");
         return reject("Failed to get response");
-      }, 1500);
+      }, 10000);
+
+      id++;
+      client.write(`${JSON.stringify({ kind, messages, id })}\n`);
       //change message.path to item.id which we will increment on each send
-      client.when(message.path, data => {
-        if (originalResolve) originalResolve(data);
-        resolve(data);
+      client.when(id, response => {
+        resolve(response);
         clearTimeout(timer);
       });
     })
@@ -22,22 +25,21 @@ const connect = () =>
 
     const client = net.connect({ port: 7272 }, () => resolve(methods(client)));
 
-    let callbacks = {};
     client.when = (key, cb) => (callbacks[key] = cb);
 
     client.on("end", () => {
       console.log("disconnected from server");
     });
 
-    client.on("data", data => {
-      let items = data
-        .toString()
-        .split(/\r\n/g)
-        .map(item => item.trim())
-        .filter(Boolean)
-        .map(item => JSON.parse(item));
-      //change item.path to item.id which we will increment on each send
-      items.forEach(item => callbacks[item.path](item));
+    var buffer = "";
+    client.on("data", function(data) {
+      buffer += data.toString(); // assuming utf8 data...
+      if (data.toString().includes("\n")) {
+        let item = JSON.parse(buffer);
+        callbacks[item.id](item);
+        delete callbacks[item.id];
+        buffer = "";
+      }
     });
   });
 
@@ -47,33 +49,37 @@ const run = async () => {
   console.timeEnd("connect");
 
   console.time("save data");
-  let items = new Array(500000).fill(0);
+  let items = new Array(1000000).fill(0);
   try {
-    for (let item in items) {
-      await client.send({
-        message: {
-          path: "blah" + item,
-          method: "create_or_replace",
-          doc: {
-            test: true,
-            zach: {
-              hello: item == 4900 ? "special json :)" : "yes i am some json"
-            }
+    await client.send({
+      kind: "success_only",
+      messages: items.map((_, index) => ({
+        path: "blah" + index,
+        method: "create_or_replace",
+        doc: {
+          test: true,
+          content:
+            "Note that I removed the redundant type specifiers (the turbofish ::<> on collect). You only need to specify the type of the variable or on collect, not both. In fact, all three examples could start with let the_vocabulary: Vec<_> to let the compiler infer the type inside the collection based on the iterator. This is the idiomatic style but I've kept the explicit types for demonstration purposes.",
+          zach: {
+            hello: index == 4900 ? "special json :)" : "yes i am some json"
           }
         }
-      });
-    }
+      }))
+    });
+
     console.timeEnd("save data");
 
     console.time("get data");
     let response2 = await client.send({
-      message: {
-        path: "blah4900",
-        method: "get"
-      }
+      messages: [
+        {
+          path: "blah0",
+          method: "get"
+        }
+      ]
     });
     console.timeEnd("get data");
-    console.log("index 4900", response2);
+    console.log("index 4900", response2.messages[0]);
   } catch (e) {
     console.log(e);
   }
